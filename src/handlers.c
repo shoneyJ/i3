@@ -671,6 +671,23 @@ static void handle_expose_event(xcb_expose_event_t *event) {
 #define _NET_MOVERESIZE_WINDOW_WIDTH (1 << 10)
 #define _NET_MOVERESIZE_WINDOW_HEIGHT (1 << 11)
 
+/* Walk up con's ancestors and return the first child whose parent is
+ * either the workspace or has more than one child. Switching a 1-child
+ * container's layout has no visible effect, so the maximize handler
+ * climbs until the layout change will actually alter what the user sees.
+ * Returns con itself if no ancestor matches (e.g. con is already a
+ * direct child of the workspace). */
+static Con *find_max_pivot(Con *con) {
+    Con *cur = con;
+    while (cur->parent != NULL && cur->parent->type != CT_WORKSPACE) {
+        if (con_num_children(cur->parent) > 1) {
+            return cur;
+        }
+        cur = cur->parent;
+    }
+    return cur;
+}
+
 static void handle_net_wm_state_change(Con *con, uint32_t change, uint32_t atom) {
     if (atom == 0) {
         return;
@@ -751,6 +768,60 @@ static void handle_client_message(xcb_client_message_event_t *event) {
 
         for (size_t i = 0; i < sizeof(event->data.data32) / sizeof(event->data.data32[0]) - 1; i++) {
             handle_net_wm_state_change(con, event->data.data32[0], event->data.data32[i + 1]);
+        }
+
+        /* Map _NET_WM_STATE_MAXIMIZED_{VERT,HORZ} (GTK/Qt/Electron
+         * titlebar maximize buttons) to a parent-layout switch to
+         * L_TABBED. In tabbed mode the targeted con dominates the
+         * workspace while siblings become tabs at the top and bars /
+         * struts stay visible — this matches what users mean by
+         * "maximize", distinct from i3's fullscreen which hides the bar.
+         *
+         * Handled outside handle_net_wm_state_change because clients
+         * commonly send VERT+HORZ in a single message and a per-atom
+         * toggle would cancel out. A floating con receiving this is
+         * first reattached to the tiling tree, since "maximize on a
+         * floating window" most naturally means "make this the main
+         * window of its workspace". */
+        bool maximize_requested = false;
+        for (size_t i = 1; i <= 2; i++) {
+            if (event->data.data32[i] == A__NET_WM_STATE_MAXIMIZED_VERT ||
+                event->data.data32[i] == A__NET_WM_STATE_MAXIMIZED_HORZ) {
+                maximize_requested = true;
+                break;
+            }
+        }
+        if (maximize_requested) {
+            uint32_t change = event->data.data32[0];
+
+            if (con_is_floating(con)) {
+                if (change == _NET_WM_STATE_REMOVE) {
+                    DLOG("Maximize REMOVE on floating con — no-op\n");
+                    return;
+                }
+                DLOG("Maximize on floating con %p -> floating_disable then tabbed\n", con);
+                floating_disable(con);
+            }
+
+            Con *pivot = find_max_pivot(con);
+            Con *parent = pivot->parent;
+            bool is_maxed = (parent != NULL &&
+                             (parent->layout == L_TABBED || parent->layout == L_STACKED));
+            bool want_maxed = (change == _NET_WM_STATE_ADD) ? true
+                              : (change == _NET_WM_STATE_REMOVE) ? false
+                              : !is_maxed; /* _NET_WM_STATE_TOGGLE */
+
+            if (want_maxed && !is_maxed && parent != NULL) {
+                DLOG("Maximize -> pivot parent (%p, type=%d, %d children) layout to tabbed\n",
+                     parent, parent->type, con_num_children(parent));
+                con_set_layout(pivot, L_TABBED);
+                tree_render();
+            } else if (!want_maxed && is_maxed) {
+                DLOG("Unmaximize -> pivot parent (%p) layout to last_split_layout (%d)\n",
+                     parent, parent->last_split_layout);
+                con_set_layout(pivot, parent->last_split_layout);
+                tree_render();
+            }
         }
     } else if (event->type == A__NET_ACTIVE_WINDOW) {
         if (event->format != 32) {
