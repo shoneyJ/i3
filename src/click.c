@@ -328,6 +328,35 @@ static void route_click(Con *con, xcb_button_press_event_t *event, const click_d
         return;
     }
 
+    /* Left-click + drag on a tiling window's titlebar converts the con
+     * to floating and continues as a floating drag. Combined with
+     * floating_maybe_reassign_ws (called from drag_window_callback on
+     * every motion event), this lets the user sweep a tile across
+     * monitors with the mouse — the mouse equivalent of the keyboard
+     * `move workspace_to_output` binding.
+     *
+     * Sits before stock i3's tiling_drag block on purpose: when the
+     * floating modifier is not held, a plain titlebar drag now means
+     * "float this", not "find a drop target to swap with". Holding the
+     * floating modifier (Mod) still reaches the stock tiling_drag path
+     * below for users who want drop-target swaps. Threshold-based via
+     * use_threshold=true, so a plain click without motion falls through
+     * to ordinary focus handling. */
+    if (is_left_click && dest == CLICK_DECORATION && !floatingcon && !mod_pressed) {
+        DLOG("title-drag tiling con %p -> float + floating_drag_window\n", con);
+        if (floating_enable(con, false)) {
+            Con *new_float = con_inside_floating(con);
+            if (new_float != NULL) {
+                allow_replay_pointer(event->time);
+                floating_drag_window(new_float, event, true /* use_threshold */);
+                return;
+            }
+            DLOG("floating_enable succeeded but con_inside_floating returned NULL — falling through\n");
+        } else {
+            DLOG("floating_enable refused (dock/workspace/already-floating) — falling through\n");
+        }
+    }
+
     /* 8: floating modifier pressed, or click in titlebar, initiate a drag */
     if (is_left_click &&
         ((config.tiling_drag == TILING_DRAG_TITLEBAR && dest == CLICK_DECORATION) ||
