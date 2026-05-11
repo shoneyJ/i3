@@ -1041,17 +1041,40 @@ static void handle_client_message(xcb_client_message_event_t *event) {
     } else if (event->type == A__NET_WM_MOVERESIZE) {
         /*
          * Client-side decorated Gtk3 windows emit this signal when being
-         * dragged by their GtkHeaderBar
+         * dragged by their GtkHeaderBar. Electron / Chromium apps using
+         * a custom titlebar (e.g. VSCode with window.titleBarStyle =
+         * "custom") emit it for the same reason.
          */
         Con *con = con_by_window_id(event->window);
-        if (!con || !con_is_floating(con)) {
-            DLOG("Couldn't find con for _NET_WM_MOVERESIZE request, or con not floating (window = %08x)\n", event->window);
+        if (!con) {
+            DLOG("Couldn't find con for _NET_WM_MOVERESIZE request (window = %08x)\n", event->window);
             return;
         }
-        DLOG("Handling _NET_WM_MOVERESIZE request (con = %p)\n", con);
         uint32_t direction = event->data.data32[2];
         uint32_t x_root = event->data.data32[0];
         uint32_t y_root = event->data.data32[1];
+
+        /* Stock i3 drops this message when the con is tiling, which
+         * leaves CSD apps undraggable from their own titlebar region.
+         * Auto-float the con on a MOVE request so the same gesture
+         * used on a stacking WM works here. Resize directions on
+         * tiled cons still drop — refusing to resize via this path
+         * preserves the layout from being mangled by a stray drag. */
+        if (!con_is_floating(con)) {
+            if (direction == _NET_WM_MOVERESIZE_MOVE) {
+                DLOG("_NET_WM_MOVERESIZE_MOVE on tiled con %p -> floating_enable first\n", con);
+                if (!floating_enable(con, false)) {
+                    DLOG("floating_enable refused; dropping move request\n");
+                    return;
+                }
+            } else {
+                DLOG("Dropping _NET_WM_MOVERESIZE resize request on tiled con (window = %08x, direction = %u)\n",
+                     event->window, direction);
+                return;
+            }
+        }
+
+        DLOG("Handling _NET_WM_MOVERESIZE request (con = %p)\n", con);
         /* construct fake xcb_button_press_event_t */
         xcb_button_press_event_t fake = {
             .root_x = x_root,
