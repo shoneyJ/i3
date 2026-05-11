@@ -672,6 +672,21 @@ static void handle_expose_event(xcb_expose_event_t *event) {
 #define _NET_MOVERESIZE_WINDOW_HEIGHT (1 << 11)
 
 /* Walk up con's ancestors and return the first child whose parent is
+ * currently in a tabbed or stacked layout. Used by the minimize/restore
+ * handler — restore reverts that ancestor back to its last_split_layout.
+ * Returns NULL if no maximized ancestor exists. */
+static Con *find_restore_pivot(Con *con) {
+    Con *cur = con;
+    while (cur->parent != NULL) {
+        if (cur->parent->layout == L_TABBED || cur->parent->layout == L_STACKED) {
+            return cur;
+        }
+        cur = cur->parent;
+    }
+    return NULL;
+}
+
+/* Walk up con's ancestors and return the first child whose parent is
  * either the workspace or has more than one child. Switching a 1-child
  * container's layout has no visible effect, so the maximize handler
  * climbs until the layout change will actually alter what the user sees.
@@ -918,12 +933,38 @@ static void handle_client_message(xcb_client_message_event_t *event) {
     } else if (event->type == A_WM_CHANGE_STATE) {
         /* http://tronche.com/gui/x/icccm/sec-4.html#s-4.1.4 */
         if (event->data.data32[0] == XCB_ICCCM_WM_STATE_ICONIC) {
-            /* For compatibility reasons, Wine will request iconic state and cannot ensure that the WM has agreed on it;
-             * immediately revert to normal to avoid being stuck in a paused state. */
-            DLOG("Client has requested iconic state, rejecting. (window = %08x)\n", event->window);
-            long data[] = {XCB_ICCCM_WM_STATE_NORMAL, XCB_NONE};
-            xcb_change_property(conn, XCB_PROP_MODE_REPLACE, event->window,
-                                A_WM_STATE, A_WM_STATE, 32, 2, data);
+            /* In a tiling WM there's no taskbar to recover a "minimized"
+             * window from, so we don't iconify it in any literal sense.
+             * Instead, treat a focused window asking for iconic state as
+             * the user clicking the titlebar "minimize" button on a
+             * window that has been maximized via _NET_WM_STATE_MAXIMIZED
+             * — i.e. "restore". Revert the nearest tabbed/stacked
+             * ancestor back to its last_split_layout.
+             *
+             * Unfocused requests (and floating cons) fall through to the
+             * legacy reject path: Wine startup-time iconic requests
+             * never reach this branch and the long-standing
+             * compatibility workaround is preserved. */
+            Con *con = con_by_window_id(event->window);
+            if (con != NULL && con == focused && !con_is_floating(con)) {
+                Con *pivot = find_restore_pivot(con);
+                if (pivot != NULL) {
+                    Con *parent = pivot->parent;
+                    DLOG("Minimize -> pivot parent (%p) layout from %d to last_split_layout (%d)\n",
+                         parent, parent->layout, parent->last_split_layout);
+                    con_set_layout(pivot, parent->last_split_layout);
+                    tree_render();
+                } else {
+                    DLOG("Minimize: no tabbed/stacked ancestor — no-op. (window = %08x)\n", event->window);
+                }
+            } else {
+                /* For compatibility reasons, Wine will request iconic state and cannot ensure that the WM has agreed on it;
+                 * immediately revert to normal to avoid being stuck in a paused state. */
+                DLOG("Client has requested iconic state, rejecting. (window = %08x)\n", event->window);
+                long data[] = {XCB_ICCCM_WM_STATE_NORMAL, XCB_NONE};
+                xcb_change_property(conn, XCB_PROP_MODE_REPLACE, event->window,
+                                    A_WM_STATE, A_WM_STATE, 32, 2, data);
+            }
         } else {
             DLOG("Not handling WM_CHANGE_STATE request. (window = %08x, state = %d)\n", event->window, event->data.data32[0]);
         }
