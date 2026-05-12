@@ -480,7 +480,11 @@ void dump_node(yajl_gen gen, Con *con, bool inplace_restart) {
     }
 
     ystr("last_split_layout");
-    switch (con->layout) {
+    /* i3more fix: upstream switches on con->layout here, which means
+     * when the current layout is tabbed/stacked the serialized value
+     * always falls through to "splith" — losing the actual stored
+     * last_split_layout. Switch on the right field. */
+    switch (con->last_split_layout) {
         case L_SPLITV:
             ystr("splitv");
             break;

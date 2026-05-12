@@ -686,6 +686,30 @@ static Con *find_restore_pivot(Con *con) {
     return NULL;
 }
 
+/* Add or remove the per-workspace "auto-maxed" mark on the parent that
+ * had its layout flipped to tabbed by the maximize-button handler. The
+ * mark is read by the i3more bar, which auto-reverts the layout when a
+ * new window joins this parent — that keeps the user's maximize click
+ * from silently absorbing subsequent windows as tabs (the original Bug 1
+ * in docs/plan/dynamicWM.md). Scoped by workspace name so multiple
+ * workspaces can be in the auto-maxed state simultaneously. */
+static void max_set_mark(Con *parent, bool add) {
+    if (parent == NULL) {
+        return;
+    }
+    Con *ws = con_get_workspace(parent);
+    if (ws == NULL || ws->name == NULL) {
+        return;
+    }
+    char mark_name[128];
+    snprintf(mark_name, sizeof(mark_name), "_i3more_maxed_%s", ws->name);
+    if (add) {
+        con_mark(parent, mark_name, MM_ADD);
+    } else {
+        con_unmark(parent, mark_name);
+    }
+}
+
 /* Walk up con's ancestors and return the first child whose parent is
  * either the workspace or has more than one child. Switching a 1-child
  * container's layout has no visible effect, so the maximize handler
@@ -830,11 +854,13 @@ static void handle_client_message(xcb_client_message_event_t *event) {
                 DLOG("Maximize -> pivot parent (%p, type=%d, %d children) layout to tabbed\n",
                      parent, parent->type, con_num_children(parent));
                 con_set_layout(pivot, L_TABBED);
+                max_set_mark(parent, true);
                 tree_render();
             } else if (!want_maxed && is_maxed) {
                 DLOG("Unmaximize -> pivot parent (%p) layout to last_split_layout (%d)\n",
                      parent, parent->last_split_layout);
                 con_set_layout(pivot, parent->last_split_layout);
+                max_set_mark(parent, false);
                 tree_render();
             }
         }
@@ -953,6 +979,7 @@ static void handle_client_message(xcb_client_message_event_t *event) {
                     DLOG("Minimize -> pivot parent (%p) layout from %d to last_split_layout (%d)\n",
                          parent, parent->layout, parent->last_split_layout);
                     con_set_layout(pivot, parent->last_split_layout);
+                    max_set_mark(parent, false);
                     tree_render();
                 } else {
                     DLOG("Minimize: no tabbed/stacked ancestor — no-op. (window = %08x)\n", event->window);
