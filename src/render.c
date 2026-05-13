@@ -437,6 +437,12 @@ static void render_con_split(Con *con, Con *child, render_params *p, int i) {
 static void render_con_stacked(Con *con, Con *child, render_params *p, int i) {
     assert(con->layout == L_STACKED);
 
+    /* i3more: remove the in-tree titlebar strip — the i3More bar is the
+     * sole switcher for stacked layouts. Zero deco_height before any
+     * per-child positioning so the focused child fills the parent rect
+     * and non-focused siblings stay hidden under X stacking. */
+    p->deco_height = 0;
+
     child->rect.x = p->x;
     child->rect.y = p->y;
     child->rect.width = p->rect.width;
@@ -455,6 +461,11 @@ static void render_con_stacked(Con *con, Con *child, render_params *p, int i) {
 
 static void render_con_tabbed(Con *con, Con *child, render_params *p, int i) {
     assert(con->layout == L_TABBED);
+
+    /* i3more: remove the in-tree tab strip — the i3More bar is the sole
+     * switcher for tabbed layouts. Zero deco_height before any per-child
+     * positioning so the focused child fills the parent rect. */
+    p->deco_height = 0;
 
     child->rect.x = p->x;
     child->rect.y = p->y;
